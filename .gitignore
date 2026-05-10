@@ -1,0 +1,5 @@
+node_modules/
+*.log
+market-lens-*.png
+cloudflared.*.log
+.DS_Store

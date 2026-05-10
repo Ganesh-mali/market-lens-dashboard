@@ -1,4 +1,20 @@
 const defaultSymbols = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "TSLA"];
+const knownStocks = [
+  ["AAPL", "Apple Inc."],
+  ["MSFT", "Microsoft Corp."],
+  ["NVDA", "NVIDIA Corp."],
+  ["AMZN", "Amazon.com, Inc."],
+  ["GOOGL", "Alphabet Inc."],
+  ["TSLA", "Tesla, Inc."],
+  ["META", "Meta Platforms, Inc."],
+  ["AMD", "Advanced Micro Devices"],
+  ["NFLX", "Netflix, Inc."],
+  ["AVGO", "Broadcom Inc."],
+  ["JPM", "JPMorgan Chase"],
+  ["V", "Visa Inc."],
+  ["WMT", "Walmart Inc."],
+  ["UNH", "UnitedHealth Group"],
+];
 
 const state = {
   activeTab: "Markets",
@@ -22,6 +38,17 @@ const app = document.querySelector("#app");
 
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 });
+
+function relativeTime(dateValue) {
+  if (!dateValue) return "--";
+  const diff = Date.now() - new Date(dateValue).getTime();
+  const minutes = Math.max(0, Math.round(diff / 60000));
+  if (minutes < 1) return "Updated just now";
+  if (minutes < 60) return `Updated ${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `Updated ${hours} hr ago`;
+  return `Updated ${Math.round(hours / 24)} day ago`;
+}
 
 function icon(name) {
   const icons = {
@@ -183,6 +210,11 @@ function stockSignal(quote) {
   };
 }
 
+function metricValue(label, value) {
+  if ((label === "Open" || label.includes("Open")) && (value == null || value === "--")) return "N/A";
+  return typeof value === "number" ? fmt.format(value) : value || "--";
+}
+
 function analysisNotes(quote) {
   if (!quote) return [];
   const positive = (quote.change || 0) >= 0;
@@ -215,7 +247,7 @@ function stockAnalysisPanel() {
   return `<section class="panel analysis-panel" id="stockAnalysis">
     <div class="analysis-head">
       <div>
-        <button class="back-button" id="closeAnalysis">Back to dashboard</button>
+        <div class="breadcrumb"><button class="back-button" id="closeAnalysis">Dashboard</button><span>/</span><span>${quote.symbol} Analysis</span></div>
         <h2>${quote.symbol} Analysis</h2>
         <div class="muted">${quote.displayName} ${quote.exchangeName ? `| ${quote.exchangeName}` : ""}</div>
       </div>
@@ -236,19 +268,19 @@ function stockAnalysisPanel() {
             ["Previous Close", quote.previousClose],
             ["52W Low", range[0]],
             ["52W High", range[1]],
-          ].map(([label, value]) => `<div><span>${label}</span><strong>${typeof value === "number" ? fmt.format(value) : value || "--"}</strong></div>`).join("")}
+          ].map(([label, value]) => `<div><span>${label}</span><strong>${metricValue(label, value)}</strong></div>`).join("")}
         </div>
       </div>
       <aside class="analysis-side">
         <div class="range-card">
           <div class="panel-title">52-Week Position</div>
-          <div class="range-big">${Math.round(pos)}%</div>
+          <div class="range-big"><span>${Math.round(pos)}%</span><small>of yearly range</small></div>
           <div class="range-track"><span style="width:${pos}%"></span></div>
           <div class="range-labels"><span>${fmt.format(range[0])}</span><span>${fmt.format(range[1])}</span></div>
         </div>
         <div class="signal-card">
           <div class="panel-title">Signal Inputs</div>
-          ${signal.reasons.map((reason) => `<p>${reason}</p>`).join("")}
+          <div class="signal-reasons">${signal.reasons.map((reason) => `<p>${reason}</p>`).join("")}</div>
         </div>
         <div class="notes-card">
           <div class="panel-title">Readout</div>
@@ -270,16 +302,17 @@ function header() {
   return `<header class="topbar">
     <div class="brand">Market Lens</div>
     <form class="symbol-form" id="symbolForm">
-      <input id="symbolInput" placeholder="Search or add symbol (e.g., AAPL, MSFT)" aria-label="Add portfolio symbol" />
-      <button title="Add symbol">${icon("search")}</button>
+      <input id="symbolInput" list="symbolSuggestions" placeholder="Search or add symbol (e.g., AAPL, MSFT)" aria-label="Search or add portfolio symbol" />
+      <datalist id="symbolSuggestions">${knownStocks.map(([symbol, name]) => `<option value="${symbol}">${name}</option>`).join("")}</datalist>
+      <button title="Add symbol" aria-label="Add symbol">${icon("search")}</button>
     </form>
     <nav class="tabs" aria-label="Primary">
       ${["Markets", "Portfolio", "News"].map((tab) => `<button class="tab ${state.activeTab === tab ? "active" : ""}" data-tab="${tab}">${tab}</button>`).join("")}
     </nav>
     <div class="top-actions">
-      <button class="icon-button ${state.theme === "dark" ? "selected-icon" : ""}" title="Theme" data-action="theme">${icon("sun")}</button>
-      <button class="icon-button" title="Alerts" data-action="alerts">${icon("bell")}</button>
-      <button class="icon-button" title="Settings" data-action="settings">${icon("settings")}</button>
+      <button class="icon-button ${state.theme === "dark" ? "selected-icon" : ""}" title="Toggle light/dark theme" aria-label="Theme" data-action="theme">${icon("sun")}</button>
+      <button class="icon-button" title="View portfolio alerts" aria-label="Alerts" data-action="alerts">${icon("bell")}</button>
+      <button class="icon-button" title="Open settings" aria-label="Settings" data-action="settings">${icon("settings")}</button>
     </div>
   </header>`;
 }
@@ -316,7 +349,7 @@ function indexCard(title, symbol, quote, color) {
         ["Low", quote?.dayLow],
         ["Prev Close", quote?.previousClose],
         ["52W Range", quote?.range52Week?.every(Boolean) ? `${fmt.format(quote.range52Week[0])} - ${fmt.format(quote.range52Week[1])}` : "--"],
-      ].map(([label, value]) => `<div><div class="metric-label">${label}</div><div class="metric-value">${typeof value === "number" ? fmt.format(value) : value || "--"}</div></div>`).join("")}
+      ].map(([label, value]) => `<div><div class="metric-label">${label}</div><div class="metric-value">${metricValue(label, value)}</div></div>`).join("")}
     </div>
   </section>`;
 }
@@ -333,7 +366,7 @@ function marketPerformance() {
       <span class="legend"><span class="legend-dot" style="background:#1976e8"></span>Nasdaq (.IXIC)</span>
     </div>
     ${comparisonChart()}
-    <div class="status-line">As of ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>
+    <div class="status-line" title="Latest chart refresh time">${relativeTime(new Date())} | ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>
   </section>`;
 }
 
@@ -344,7 +377,7 @@ function sectors() {
   ];
   return `<section class="panel sectors">
     <div class="panel-head"><h2 class="panel-title">S&P 500 Sectors</h2><span class="muted" style="font-size:12px">Performance is day change %</span></div>
-    <div class="sector-row">${data.map(([name, value]) => `<div class="sector ${value < 0 ? "bad" : ""}">${name}<br><span class="${value < 0 ? "negative" : "positive"}">${signed(value, "%")}</span></div>`).join("")}</div>
+    <div class="sector-row">${data.map(([name, value]) => `<div class="sector ${value < 0 ? "bad" : ""}">${name}<br><span class="${value < 0 ? "negative" : "positive"}">${value < 0 ? "↓" : "↑"} ${signed(value, "%")}</span></div>`).join("")}</div>
   </section>`;
 }
 
@@ -352,7 +385,7 @@ function watchlist() {
   return `<section class="panel watchlist">
     <div class="watch-head"><h2 class="panel-title">My Watchlist</h2><button class="small-button" id="refreshBtn">Refresh</button></div>
     <table>
-      <thead><tr><th>Symbol</th><th>Signal</th><th>Company</th><th>Price</th><th>Change</th><th>% Change</th><th>Day Chart</th><th>Updated</th></tr></thead>
+      <thead><tr><th>Symbol</th><th>Signal</th><th>Company</th><th>Price</th><th>Change</th><th>% Change</th><th>Day Chart</th><th>Updated</th><th>Remove</th></tr></thead>
       <tbody>
         ${state.portfolio.map((q) => {
           const positive = (q.change || 0) >= 0;
@@ -366,6 +399,7 @@ function watchlist() {
             <td class="${positive ? "positive" : "negative"}">${signed(q.changePercent, "%")}</td>
             <td>${spark(q.points || [], positive, "mini-chart")}</td>
             <td>${q.marketTime ? new Date(q.marketTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "--"}</td>
+            <td><button class="remove-row" data-remove="${q.symbol}" title="Remove ${q.symbol} from watchlist" aria-label="Remove ${q.symbol}">×</button></td>
           </tr>`;
         }).join("")}
       </tbody>
@@ -396,10 +430,10 @@ function newsPanel() {
   return `<aside class="side-rail">
     <section class="panel news-panel">
       <div class="news-head">
-        <div class="panel-head" style="margin:0"><h2 class="panel-title">Top News</h2><button class="icon-button" title="News settings" data-action="news-settings">${icon("settings")}</button></div>
+        <div class="panel-head" style="margin:0"><h2 class="panel-title">Top News</h2><button class="icon-button" title="Open news settings" aria-label="News settings" data-action="news-settings">${icon("settings")}</button></div>
         <div class="news-tabs">${categories.map((category) => `<button class="${state.newsCategory === category ? "active" : ""}" data-news-category="${category}">${category}</button>`).join("")}</div>
       </div>
-      ${newsRows(8)}
+      <div class="news-list">${newsRows(8)}</div>
       <div style="padding:14px 16px"><button class="small-button selected" data-tab="News">View more news</button></div>
     </section>
     <section class="panel filters">
@@ -457,7 +491,7 @@ function newsView() {
       <section class="panel news-panel">
         <div class="news-head"><h2 class="panel-title">${state.newsCategory}</h2><div class="status-line">Portfolio: ${state.symbols.join(", ")}</div></div>
         ${stockAnalysisPanel()}
-        ${newsRows(18)}
+        <div class="news-list full">${newsRows(18)}</div>
       </section>
     </div>
   </main>`;
@@ -577,8 +611,10 @@ function bindEvents() {
     });
   });
   document.querySelectorAll("[data-remove]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
       state.symbols = state.symbols.filter((symbol) => symbol !== button.dataset.remove);
+      if (state.activeSymbol === button.dataset.remove) state.activeSymbol = "";
       saveSymbols();
       loadData();
     });

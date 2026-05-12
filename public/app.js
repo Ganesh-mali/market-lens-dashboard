@@ -255,7 +255,7 @@ function stockAnalysisPanel() {
       <div>
         <div class="breadcrumb"><button class="back-button" id="closeAnalysis">Dashboard</button><span>/</span><span>${quote.symbol} Analysis</span></div>
         <h2>${quote.symbol} Analysis</h2>
-        <div class="muted">${quote.displayName} ${quote.exchangeName ? `| ${quote.exchangeName}` : ""}</div>
+        <div class="muted">${quote.displayName} ${quote.exchangeName ? `| ${quote.exchangeName}` : ""} ${quote.isStale ? "| Showing last close data" : ""}</div>
       </div>
       <div class="analysis-price">
         <div>${quote.price ? fmt.format(quote.price) : "--"}</div>
@@ -334,7 +334,7 @@ function marketStrip() {
   const session = marketSession();
   return `<div class="market-strip">
     <div class="market-open"><span class="dot ${session === "Market Closed" ? "off" : ""}"></span><strong>${session}</strong></div>
-    ${quotes.map(([name, q]) => `<div class="strip-quote"><span class="strip-name">${name}</span><span>${q?.price ? fmt.format(q.price) : "--"}</span><span class="${(q?.change || 0) >= 0 ? "positive" : "negative"}">${signed(q?.change)} (${signed(q?.changePercent, "%")})</span></div>`).join("")}
+    ${quotes.map(([name, q]) => `<div class="strip-quote" title="${q?.isStale ? "Market is closed or intraday feed is unavailable; showing last close data." : "Live intraday feed"}"><span class="strip-name">${name}</span><span>${q?.price ? fmt.format(q.price) : "--"}</span><span class="${(q?.change || 0) >= 0 ? "positive" : "negative"}">${signed(q?.change)} (${signed(q?.changePercent, "%")})</span></div>`).join("")}
   </div>`;
 }
 
@@ -343,7 +343,7 @@ function indexCard(title, symbol, quote, color) {
   return `<section class="panel index-card">
     <div class="index-head">
       <h2 class="index-title">${title} <span class="muted">${symbol}</span></h2>
-      <span class="live"><span class="dot"></span> LIVE FEED</span>
+      <span class="live ${quote?.isStale ? "stale" : ""}"><span class="dot ${quote?.isStale ? "off" : ""}"></span>${quote?.isStale ? "LAST CLOSE" : "LIVE FEED"}</span>
     </div>
     <div class="big-price">${quote?.price ? fmt.format(quote.price) : "--"}</div>
     <div class="${positive ? "positive" : "negative"}">${signed(quote?.change)} (${signed(quote?.changePercent, "%")})</div>

@@ -61,6 +61,19 @@ def history_frame(symbol: str, period: str = "1d", interval: str = "5m") -> pd.D
     return frame.dropna(how="all")
 
 
+def close_values(frame: pd.DataFrame) -> list[float]:
+    closes = [safe_float(value) for value in frame.get("Close", pd.Series(dtype=float)).tolist()]
+    return [value for value in closes if value is not None]
+
+
+def frame_timestamps(frame: pd.DataFrame) -> list[int]:
+    return [
+        int(ts.to_pydatetime().replace(tzinfo=timezone.utc).timestamp())
+        for ts in frame.index
+        if hasattr(ts, "to_pydatetime")
+    ]
+
+
 def analytics_for(closes: list[float], price: float | None) -> dict[str, float | None]:
     series = pd.Series(closes, dtype="float64").dropna()
     if len(series) < 3:
@@ -97,17 +110,19 @@ def normalize_quote(symbol: str) -> dict[str, Any]:
     except Exception:
         info = {}
 
-    frame = history_frame(clean_symbol, "1d", "5m")
-    closes = [safe_float(value) for value in frame.get("Close", pd.Series(dtype=float)).tolist()]
-    closes = [value for value in closes if value is not None]
-    timestamps = [
-        int(ts.to_pydatetime().replace(tzinfo=timezone.utc).timestamp())
-        for ts in frame.index[-72:]
-        if hasattr(ts, "to_pydatetime")
-    ]
+    intraday = history_frame(clean_symbol, "1d", "5m")
+    daily = history_frame(clean_symbol, "6mo", "1d")
+    intraday_closes = close_values(intraday)
+    daily_closes = close_values(daily)
+    closes = intraday_closes or daily_closes[-72:]
+    timestamps = (frame_timestamps(intraday) if intraday_closes else frame_timestamps(daily))[-72:]
 
     price = safe_float(info.get("last_price")) or (closes[-1] if closes else None)
-    previous = safe_float(info.get("previous_close")) or (closes[0] if closes else None)
+    previous = safe_float(info.get("previous_close"))
+    if previous is None and len(daily_closes) >= 2:
+        previous = daily_closes[-2]
+    if previous is None and closes:
+        previous = closes[0]
     change = price - previous if price is not None and previous is not None else None
     change_percent = (change / previous) * 100 if change is not None and previous else None
 
@@ -133,9 +148,11 @@ def normalize_quote(symbol: str) -> dict[str, Any]:
         "dayLow": safe_float(info.get("day_low")),
         "range52Week": [safe_float(info.get("year_low")), safe_float(info.get("year_high"))],
         "marketTime": datetime.now(timezone.utc).isoformat(),
+        "isStale": not bool(intraday_closes),
+        "dataMode": "intraday" if intraday_closes else "last close",
         "points": closes[-72:],
         "timestamps": timestamps,
-        "analytics": analytics_for(closes[-72:], price),
+        "analytics": analytics_for((daily_closes or closes)[-72:], price),
     }
 
 
@@ -152,6 +169,8 @@ def history_points(symbol: str, range_name: str) -> list[dict[str, Any]]:
     }.get(range_name, "ytd")
     interval = "5m" if range_name == "1d" else "1d"
     frame = history_frame(symbol, period, interval)
+    if frame.empty and range_name == "1d":
+        frame = history_frame(symbol, "5d", "1d")
     closes = frame.get("Close", pd.Series(dtype=float))
     points = []
     for ts, close in closes.items():

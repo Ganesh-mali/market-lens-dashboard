@@ -30,6 +30,7 @@ const state = {
   newsCategory: "All News",
   theme: localStorage.getItem("marketLensTheme") || "light",
   modal: "",
+  searchMessage: "",
   loading: true,
   error: "",
 };
@@ -38,6 +39,7 @@ const app = document.querySelector("#app");
 
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 });
+let searchTimer;
 
 function relativeTime(dateValue) {
   if (!dateValue) return "--";
@@ -173,7 +175,7 @@ function stockSignal(quote) {
   const intradayPct = quote?.changePercent || 0;
   const high = Math.max(...values, quote?.price || 0);
   const low = Math.min(...values, quote?.price || 0);
-  const volatilityPct = quote?.price ? ((high - low) / quote.price) * 100 : 0;
+  const volatilityPct = quote?.analytics?.volatility ?? (quote?.price ? ((high - low) / quote.price) * 100 : 0);
   const range = quote?.range52Week?.every(Boolean) ? quote.range52Week : null;
   const rangePosition = range ? ((quote.price - range[0]) / (range[1] - range[0] || 1)) * 100 : 50;
   const related = newsForSymbol(quote.symbol);
@@ -206,6 +208,7 @@ function stockSignal(quote) {
       `Short momentum: ${signed(momentumPct, "%")}`,
       `News balance: ${positiveNews} positive / ${negativeNews} negative`,
       `Volatility: ${fmt.format(volatilityPct)}%`,
+      quote.analytics?.rSquared != null ? `Trend confidence: ${Math.round(quote.analytics.rSquared * 100)}%` : "Trend confidence: N/A",
     ],
   };
 }
@@ -228,6 +231,9 @@ function analysisNotes(quote) {
     rangePosition == null
       ? "52-week range context is not available from the quote feed right now."
       : `The current price sits near ${Math.round(rangePosition)}% of its 52-week range.`,
+    quote.analytics?.zScore == null
+      ? "Statistical deviation is not available yet for this ticker."
+      : `Statistical deviation is ${quote.analytics.zScore.toFixed(2)} standard deviations from its recent mean.`,
     positive
       ? "Short-term momentum is constructive; watch whether follow-through holds above the previous close."
       : "Short-term momentum is under pressure; watch whether buyers defend the day low and previous close.",
@@ -302,7 +308,7 @@ function header() {
   return `<header class="topbar">
     <div class="brand">Market Lens</div>
     <form class="symbol-form" id="symbolForm">
-      <input id="symbolInput" list="symbolSuggestions" placeholder="Search or add symbol (e.g., AAPL, MSFT)" aria-label="Search or add portfolio symbol" />
+      <input id="symbolInput" list="symbolSuggestions" placeholder="Type any ticker or company (e.g., IBM, JPM, BABA)" aria-label="Search or add portfolio symbol" autocomplete="off" />
       <datalist id="symbolSuggestions">${knownStocks.map(([symbol, name]) => `<option value="${symbol}">${name}</option>`).join("")}</datalist>
       <button title="Add symbol" aria-label="Add symbol">${icon("search")}</button>
     </form>
@@ -383,7 +389,8 @@ function sectors() {
 
 function watchlist() {
   return `<section class="panel watchlist">
-    <div class="watch-head"><h2 class="panel-title">My Watchlist</h2><button class="small-button" id="refreshBtn">Refresh</button></div>
+    <div class="watch-head"><div><h2 class="panel-title">My Watchlist</h2><div class="scroll-hint">Swipe or scroll sideways to see all columns</div></div><button class="small-button" id="refreshBtn">Refresh</button></div>
+    <div class="table-scroll" tabindex="0" aria-label="Scrollable watchlist table">
     <table>
       <thead><tr><th>Symbol</th><th>Signal</th><th>Company</th><th>Price</th><th>Change</th><th>% Change</th><th>Day Chart</th><th>Updated</th><th>Remove</th></tr></thead>
       <tbody>
@@ -404,6 +411,7 @@ function watchlist() {
         }).join("")}
       </tbody>
     </table>
+    </div>
   </section>`;
 }
 
@@ -484,7 +492,8 @@ function newsView() {
     <div class="news-page">
       <section class="panel portfolio-editor">
         <h2 class="panel-title">Portfolio Symbols</h2>
-        <div class="symbol-chip-list">${state.symbols.map((symbol) => `<span class="chip"><button class="ticker-button inline" data-symbol="${symbol}">${symbol}</button><button data-remove="${symbol}" title="Remove ${symbol}">&times;</button></span>`).join("")}</div>
+        <div class="symbol-chip-list">${state.symbols.map((symbol) => `<span class="chip"><button class="ticker-button inline" data-symbol="${symbol}">${symbol}</button><button data-remove="${symbol}" title="Remove ${symbol}" aria-label="Remove ${symbol}">&times;</button></span>`).join("")}</div>
+        <div class="portfolio-help">Use the search bar above to add any valid exchange ticker, then remove it here or in the watchlist.</div>
         <div class="filter-bar">${categories.map((category) => `<button class="${state.newsCategory === category ? "selected" : ""}" data-news-category="${category}">${category}</button>`).join("")}</div>
         <div class="filter-bar">${["All", "Positive", "Neutral", "Negative"].map((filter) => `<button class="${state.sentiment === filter ? "selected" : ""}" data-sentiment="${filter}">${filter}</button>`).join("")}</div>
       </section>
@@ -527,7 +536,7 @@ function modalPanel() {
 
 function render() {
   document.body.dataset.theme = state.theme;
-  app.innerHTML = `<div class="app-shell">${header()}${marketStrip()}${state.error ? `<div class="empty">${state.error}</div>` : ""}${state.loading ? `<div class="empty">Loading live market data...</div>` : state.activeTab === "News" ? newsView() : state.activeTab === "Portfolio" ? portfolioView() : marketsView()}${modalPanel()}</div>`;
+  app.innerHTML = `<div class="app-shell">${header()}${state.searchMessage ? `<div class="toast">${state.searchMessage}</div>` : ""}${marketStrip()}${state.error ? `<div class="empty">${state.error}</div>` : ""}${state.loading ? `<div class="empty">Loading live market data...</div>` : state.activeTab === "News" ? newsView() : state.activeTab === "Portfolio" ? portfolioView() : marketsView()}${modalPanel()}</div>`;
   bindEvents();
 }
 
@@ -547,6 +556,10 @@ async function loadData() {
     if (markets.error || portfolio.error || news.error || marketNews.error) throw new Error(markets.error || portfolio.error || news.error || marketNews.error);
     state.markets = markets;
     state.portfolio = portfolio.quotes || [];
+    if (state.activeSymbol && !state.portfolio.some((quote) => quote.symbol === state.activeSymbol)) {
+      state.searchMessage = `${state.activeSymbol} could not be loaded. Check the ticker symbol and try again.`;
+      state.activeSymbol = "";
+    }
     state.histories = { "^GSPC": spHistory, "^IXIC": ndHistory };
     state.news = news.news || [];
     state.marketNews = marketNews.news || [];
@@ -561,6 +574,40 @@ async function loadData() {
 
 function saveSymbols() {
   localStorage.setItem("marketLensSymbols", JSON.stringify(state.symbols));
+}
+
+async function updateSearchSuggestions(query) {
+  const list = document.querySelector("#symbolSuggestions");
+  if (!list || query.trim().length < 2) return;
+  try {
+    const response = await fetch(`/api/search?q=${encodeURIComponent(query.trim())}`);
+    const data = await response.json();
+    const results = data.results || [];
+    const merged = [
+      ...results.map((item) => [item.symbol, `${item.name}${item.exchange ? ` | ${item.exchange}` : ""}`]),
+      ...knownStocks,
+    ];
+    const seen = new Set();
+    list.innerHTML = merged
+      .filter(([symbol]) => {
+        if (!symbol || seen.has(symbol)) return false;
+        seen.add(symbol);
+        return true;
+      })
+      .slice(0, 12)
+      .map(([symbol, name]) => `<option value="${symbol}">${name}</option>`)
+      .join("");
+  } catch {
+    list.innerHTML = knownStocks.map(([symbol, name]) => `<option value="${symbol}">${name}</option>`).join("");
+  }
+}
+
+function removeSymbol(symbol) {
+  state.symbols = state.symbols.filter((item) => item !== symbol);
+  if (state.activeSymbol === symbol) state.activeSymbol = "";
+  state.searchMessage = `${symbol} removed from portfolio.`;
+  saveSymbols();
+  loadData();
 }
 
 function openStockAnalysis(symbol) {
@@ -613,10 +660,7 @@ function bindEvents() {
   document.querySelectorAll("[data-remove]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      state.symbols = state.symbols.filter((symbol) => symbol !== button.dataset.remove);
-      if (state.activeSymbol === button.dataset.remove) state.activeSymbol = "";
-      saveSymbols();
-      loadData();
+      removeSymbol(button.dataset.remove);
     });
   });
   document.querySelectorAll("[data-symbol]").forEach((element) => {
@@ -655,14 +699,20 @@ function bindEvents() {
     if (symbol && !state.symbols.includes(symbol)) {
       state.symbols = [symbol, ...state.symbols].slice(0, 12);
       state.activeSymbol = symbol;
+      state.searchMessage = `Adding ${symbol} to portfolio...`;
       saveSymbols();
       input.value = "";
       loadData();
     } else if (symbol) {
       state.activeSymbol = symbol;
+      state.searchMessage = `${symbol} is already in your portfolio.`;
       input.value = "";
       render();
     }
+  });
+  document.querySelector("#symbolInput")?.addEventListener("input", (event) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => updateSearchSuggestions(event.target.value), 250);
   });
   document.querySelector("#refreshBtn")?.addEventListener("click", loadData);
   document.querySelector("#clearFilters")?.addEventListener("click", () => {

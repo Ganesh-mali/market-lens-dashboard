@@ -389,7 +389,7 @@ function sectors() {
 
 function watchlist() {
   return `<section class="panel watchlist">
-    <div class="watch-head"><div><h2 class="panel-title">My Watchlist</h2><div class="scroll-hint">Swipe or scroll sideways to see all columns</div></div><button class="small-button" id="refreshBtn">Refresh</button></div>
+    <div class="watch-head"><div><h2 class="panel-title">My Watchlist</h2><div class="scroll-hint">Rows become cards on smaller screens so all data stays visible.</div></div><button class="small-button" id="refreshBtn">Refresh</button></div>
     <div class="table-scroll" tabindex="0" aria-label="Scrollable watchlist table">
     <table>
       <thead><tr><th>Symbol</th><th>Signal</th><th>Company</th><th>Price</th><th>Change</th><th>% Change</th><th>Day Chart</th><th>Updated</th><th>Remove</th></tr></thead>

@@ -15,15 +15,18 @@ const knownStocks = [
   ["WMT", "Walmart Inc."],
   ["UNH", "UnitedHealth Group"],
 ];
+const knownStockMap = Object.fromEntries(knownStocks);
 
 const state = {
   activeTab: "Markets",
   symbols: JSON.parse(localStorage.getItem("marketLensSymbols") || "null") || defaultSymbols,
   sentiment: "All",
   marketRange: "6mo",
+  stockRange: "1d",
   markets: null,
   portfolio: [],
   histories: {},
+  stockHistories: {},
   news: [],
   marketNews: [],
   activeSymbol: "",
@@ -158,17 +161,76 @@ function stockPath(values, width = 920, height = 230) {
   }).join(" ");
 }
 
-function stockAnalysisChart(quote) {
-  const values = quote?.points || [];
-  const positive = (quote?.change || 0) >= 0;
+function activeStockHistory(quote) {
+  const history = state.stockHistories[quote?.symbol]?.[state.stockRange] || [];
+  if (history.length) return history;
+  return (quote?.points || []).map((close, index) => ({ time: quote?.timestamps?.[index] || index, close }));
+}
+
+function stockRangeLabel(range) {
+  return {
+    "1d": "1D",
+    "5d": "5D",
+    "1mo": "1M",
+    "3mo": "3M",
+    "6mo": "YTD",
+    "1y": "1Y",
+    "3y": "3Y",
+    "5y": "5Y",
+  }[range] || range.toUpperCase();
+}
+
+function rangePerformance(history) {
+  const values = history.map((point) => point.close).filter((value) => value != null);
+  if (values.length < 2) {
+    return { change: null, changePercent: null, high: null, low: null, start: null, end: null };
+  }
+  const start = values[0];
+  const end = values[values.length - 1];
+  const change = end - start;
+  return {
+    change,
+    changePercent: start ? (change / start) * 100 : null,
+    high: Math.max(...values),
+    low: Math.min(...values),
+    start,
+    end,
+  };
+}
+
+function timeAxisLabels(history) {
+  if (!history.length) return [];
+  const formatter = state.stockRange === "1d"
+    ? new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" })
+    : state.stockRange === "5d"
+      ? new Intl.DateTimeFormat("en-US", { weekday: "short" })
+      : new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+  const picks = [0, Math.floor((history.length - 1) / 2), history.length - 1]
+    .filter((value, index, array) => array.indexOf(value) === index);
+  return picks.map((index) => ({
+    left: `${(index / Math.max(history.length - 1, 1)) * 100}%`,
+    label: formatter.format(new Date((history[index].time || 0) * 1000)),
+  }));
+}
+
+function stockAnalysisChart(quote, history) {
+  const values = history.map((point) => point.close).filter((value) => value != null);
+  const perf = rangePerformance(history);
+  const positive = (perf.change ?? quote?.change ?? 0) >= 0;
   const color = positive ? "#087d31" : "#cf1f2f";
   const fill = positive ? "#dff5e7" : "#fde2e4";
   const path = stockPath(values);
-  return `<svg class="analysis-chart" viewBox="0 0 920 230" preserveAspectRatio="none">
-    ${[0, 1, 2, 3].map((tick) => `<path d="M16 ${18 + tick * 62}H904" stroke="#e1e7f0"/>`).join("")}
-    <path d="${path} L904 212 L16 212 Z" fill="${fill}" opacity=".75"></path>
-    <path d="${path}" fill="none" stroke="${color}" stroke-width="2.6"></path>
-  </svg>`;
+  const labels = timeAxisLabels(history);
+  return `<div class="analysis-chart-shell">
+    <svg class="analysis-chart" viewBox="0 0 920 230" preserveAspectRatio="none">
+      ${[0, 1, 2, 3].map((tick) => `<path d="M16 ${18 + tick * 62}H904" stroke="#e1e7f0"/>`).join("")}
+      <path d="${path} L904 212 L16 212 Z" fill="${fill}" opacity=".75"></path>
+      <path d="${path}" fill="none" stroke="${color}" stroke-width="2.6"></path>
+    </svg>
+    <div class="analysis-axis">
+      ${labels.map((item) => `<span style="left:${item.left}">${item.label}</span>`).join("")}
+    </div>
+  </div>`;
 }
 
 function newsForSymbol(symbol) {
@@ -224,6 +286,24 @@ function stockSignal(quote) {
   };
 }
 
+function relatedStocks(quote) {
+  const peers = {
+    MRVL: ["NVDA", "AVGO", "AMD", "INTC"],
+    NVDA: ["AMD", "AVGO", "MRVL", "TSM"],
+    AMD: ["NVDA", "MRVL", "AVGO", "INTC"],
+    META: ["GOOGL", "NFLX", "AMZN", "MSFT"],
+    AAPL: ["MSFT", "GOOGL", "NVDA", "AMZN"],
+    MSFT: ["AAPL", "GOOGL", "NVDA", "META"],
+    GOOGL: ["META", "MSFT", "AAPL", "AMZN"],
+    AMZN: ["AAPL", "MSFT", "GOOGL", "META"],
+    TSLA: ["NVDA", "AAPL", "AMZN", "GOOGL"],
+  };
+  return (peers[quote?.symbol] || knownStocks.map(([symbol]) => symbol))
+    .filter((symbol) => symbol !== quote?.symbol)
+    .slice(0, 4)
+    .map((symbol) => state.portfolio.find((item) => item.symbol === symbol) || { symbol, displayName: knownStockMap[symbol] || symbol });
+}
+
 function metricValue(label, value) {
   if ((label === "Open" || label.includes("Open")) && (value == null || value === "--")) return "N/A";
   return typeof value === "number" ? fmt.format(value) : value || "--";
@@ -255,11 +335,16 @@ function analysisNotes(quote) {
 function stockAnalysisPanel() {
   const quote = state.portfolio.find((item) => item.symbol === state.activeSymbol);
   if (!quote) return "";
-  const positive = (quote.change || 0) >= 0;
+  const history = activeStockHistory(quote);
+  const performance = rangePerformance(history);
+  const positive = (performance.change ?? quote.change ?? 0) >= 0;
   const relatedNews = newsForSymbol(quote.symbol).slice(0, 4);
   const range = quote.range52Week?.every(Boolean) ? quote.range52Week : [quote.price * 0.75, quote.price * 1.15];
   const pos = Math.max(0, Math.min(100, ((quote.price - range[0]) / (range[1] - range[0] || 1)) * 100));
   const signal = stockSignal(quote);
+  const trendConfidence = quote.analytics?.rSquared != null ? `${Math.round(quote.analytics.rSquared * 100)}%` : "--";
+  const ranges = [["1d", "1D"], ["5d", "5D"], ["1mo", "1M"], ["3mo", "3M"], ["6mo", "YTD"], ["1y", "1Y"], ["5y", "5Y"]];
+  const peers = relatedStocks(quote);
 
   return `<section class="panel analysis-panel" id="stockAnalysis">
     <div class="analysis-head">
@@ -274,9 +359,40 @@ function stockAnalysisPanel() {
         <strong class="signal-badge ${signal.label.replaceAll(" ", "-").toLowerCase()}">${signal.label}</strong>
       </div>
     </div>
+    <div class="analysis-summary-grid">
+      <div class="summary-card emphasis">
+        <span class="summary-label">${stockRangeLabel(state.stockRange)} performance</span>
+        <strong class="${(performance.change || 0) >= 0 ? "positive" : "negative"}">${signed(performance.change)} (${signed(performance.changePercent, "%")})</strong>
+        <small>${quote.isStale ? "Using latest close and recent history" : "Built from live and recent price history"}</small>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">Trend confidence</span>
+        <strong>${trendConfidence}</strong>
+        <small>Regression fit across the recent sample window</small>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">Range low / high</span>
+        <strong>${performance.low != null ? fmt.format(performance.low) : "--"} - ${performance.high != null ? fmt.format(performance.high) : "--"}</strong>
+        <small>Observed over the selected period</small>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">News tone</span>
+        <strong>${signal.positiveNews} positive / ${signal.negativeNews} negative</strong>
+        <small>${signal.relatedCount} matched headlines for this ticker</small>
+      </div>
+    </div>
     <div class="analysis-grid">
       <div class="analysis-main">
-        ${stockAnalysisChart(quote)}
+        <div class="analysis-chart-card">
+          <div class="panel-head">
+            <div>
+              <h3 class="panel-title">Price Performance</h3>
+              <div class="status-line">${relativeTime(quote.marketTime)} | ${stockRangeLabel(state.stockRange)} window</div>
+            </div>
+            <div class="range-tabs stock-range-tabs">${ranges.map(([value, label]) => `<button class="${state.stockRange === value ? "selected" : ""}" data-stock-range="${value}">${label}</button>`).join("")}</div>
+          </div>
+          ${stockAnalysisChart(quote, history)}
+        </div>
         <div class="analysis-metrics">
           ${[
             ["Open", quote.open],
@@ -304,6 +420,38 @@ function stockAnalysisPanel() {
           ${analysisNotes(quote).map((note) => `<p>${note}</p>`).join("")}
         </div>
       </aside>
+    </div>
+    <div class="analysis-bottom-grid">
+      <section class="related-card">
+        <div class="panel-head"><h3 class="panel-title">Related Movers</h3><span class="status-line">Quick scan from your tracked names</span></div>
+        <div class="related-list">
+          ${peers.map((peer) => {
+            const peerPositive = (peer.change || 0) >= 0;
+            const peerName = peer.displayName || peer.symbol;
+            return `<button class="related-row" data-symbol="${peer.symbol}">
+              <div>
+                <strong>${peerName}</strong>
+                <span>${peer.symbol}</span>
+              </div>
+              <div class="${peerPositive ? "positive" : "negative"}">${peer.price ? fmt.format(peer.price) : "--"} ${peer.changePercent != null ? signed(peer.changePercent, "%") : ""}</div>
+            </button>`;
+          }).join("")}
+        </div>
+      </section>
+      <section class="fundamentals-grid">
+        <div class="mini-panel">
+          <div class="panel-title">Technical Snapshot</div>
+          <p>Volatility <strong>${quote.analytics?.volatility != null ? `${fmt.format(quote.analytics.volatility)}%` : "--"}</strong></p>
+          <p>Mean return <strong>${quote.analytics?.meanReturn != null ? `${signed(quote.analytics.meanReturn, "%")}` : "--"}</strong></p>
+          <p>Z-score <strong>${quote.analytics?.zScore != null ? quote.analytics.zScore.toFixed(2) : "--"}</strong></p>
+        </div>
+        <div class="mini-panel">
+          <div class="panel-title">Signal Read</div>
+          <p>Current stance <strong>${signal.label}</strong></p>
+          <p>Momentum <strong>${signed(signal.momentumPct, "%")}</strong></p>
+          <p>52-week position <strong>${Math.round(signal.rangePosition)}%</strong></p>
+        </div>
+      </section>
     </div>
     <div class="analysis-news">
       <div class="panel-head"><h3 class="panel-title">${quote.symbol} Related Headlines</h3><button class="small-button selected" data-tab="News">Open News Tab</button></div>
@@ -575,6 +723,9 @@ async function loadData() {
     state.histories = { "^GSPC": spHistory, "^IXIC": ndHistory };
     state.news = news.news || [];
     state.marketNews = marketNews.news || [];
+    if (state.activeSymbol && state.portfolio.some((quote) => quote.symbol === state.activeSymbol)) {
+      await ensureStockHistory(state.activeSymbol, state.stockRange);
+    }
     state.error = "";
   } catch (error) {
     state.error = `${error.message} The dashboard will retry when you refresh.`;
@@ -635,10 +786,45 @@ function removeSymbol(symbol) {
   loadData();
 }
 
-function openStockAnalysis(symbol) {
+function addSymbolToPortfolio(symbol) {
   const normalized = symbol?.toUpperCase();
-  if (!normalized || !state.portfolio.some((quote) => quote.symbol === normalized)) return;
+  if (!normalized) return false;
+  if (!state.symbols.includes(normalized)) {
+    state.symbols = [normalized, ...state.symbols].slice(0, 12);
+    saveSymbols();
+    return true;
+  }
+  return false;
+}
+
+async function ensureStockHistory(symbol, range = state.stockRange) {
+  const normalized = symbol?.toUpperCase();
+  if (!normalized) return;
+  if (state.stockHistories[normalized]?.[range]) return;
+  const history = await apiJson(`/api/history?symbol=${encodeURIComponent(normalized)}&range=${range}`);
+  state.stockHistories[normalized] = {
+    ...(state.stockHistories[normalized] || {}),
+    [range]: history,
+  };
+}
+
+async function openStockAnalysis(symbol) {
+  const normalized = symbol?.toUpperCase();
+  if (!normalized) return;
+  if (!state.portfolio.some((quote) => quote.symbol === normalized)) {
+    addSymbolToPortfolio(normalized);
+    state.activeSymbol = normalized;
+    state.searchMessage = `Adding ${normalized} to portfolio...`;
+    await loadData();
+    return;
+  }
   state.activeSymbol = normalized;
+  try {
+    await ensureStockHistory(normalized);
+    state.error = "";
+  } catch (error) {
+    state.error = error.message;
+  }
   render();
   document.querySelector("#stockAnalysis")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -688,6 +874,23 @@ function bindEvents() {
       }
     });
   });
+  document.querySelectorAll("[data-stock-range]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.stockRange = button.dataset.stockRange;
+      if (!state.activeSymbol) {
+        render();
+        return;
+      }
+      try {
+        await ensureStockHistory(state.activeSymbol, state.stockRange);
+        state.error = "";
+      } catch (error) {
+        state.error = error.message;
+      } finally {
+        render();
+      }
+    });
+  });
   document.querySelectorAll("[data-remove]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -728,18 +931,15 @@ function bindEvents() {
     const input = document.querySelector("#symbolInput");
     const raw = input.value;
     const symbol = await resolveSymbol(raw);
-    if (symbol && !state.symbols.includes(symbol)) {
-      state.symbols = [symbol, ...state.symbols].slice(0, 12);
+    if (symbol && addSymbolToPortfolio(symbol)) {
       state.activeSymbol = symbol;
       state.searchMessage = `Adding ${symbol} to portfolio...`;
-      saveSymbols();
       input.value = "";
       loadData();
     } else if (symbol) {
-      state.activeSymbol = symbol;
       state.searchMessage = `${symbol} is already in your portfolio.`;
       input.value = "";
-      render();
+      openStockAnalysis(symbol);
     }
   });
   document.querySelector("#symbolInput")?.addEventListener("input", (event) => {

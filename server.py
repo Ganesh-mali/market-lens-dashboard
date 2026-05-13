@@ -125,8 +125,17 @@ def history_frame(symbol: str, period: str = "1d", interval: str = "5m") -> pd.D
         return frame.dropna(how="all")
 
 
+def close_series(frame: pd.DataFrame) -> pd.Series:
+    if frame.empty or "Close" not in frame:
+        return pd.Series(dtype=float)
+    closes = frame["Close"]
+    if isinstance(closes, pd.DataFrame):
+        closes = closes.iloc[:, 0]
+    return pd.to_numeric(closes, errors="coerce").dropna()
+
+
 def close_values(frame: pd.DataFrame) -> list[float]:
-    closes = [safe_float(value) for value in frame.get("Close", pd.Series(dtype=float)).tolist()]
+    closes = [safe_float(value) for value in close_series(frame).tolist()]
     return [value for value in closes if value is not None]
 
 
@@ -248,7 +257,7 @@ def history_points(symbol: str, range_name: str) -> list[dict[str, Any]]:
     frame = history_frame(symbol, period, interval)
     if frame.empty and range_name == "1d":
         frame = history_frame(symbol, "5d", "1d")
-    closes = frame.get("Close", pd.Series(dtype=float))
+    closes = close_series(frame)
     points = []
     for ts, close in closes.items():
         value = safe_float(close)

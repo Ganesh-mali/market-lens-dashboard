@@ -69,7 +69,9 @@ function signed(value, suffix = "") {
 }
 
 async function apiJson(url) {
-  const response = await fetch(url);
+  const endpoint = new URL(url, window.location.origin);
+  endpoint.searchParams.set("_", Date.now().toString());
+  const response = await fetch(endpoint, { cache: "no-store" });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.error || data.detail) {
     throw new Error(data.error || data.detail || `Request failed: ${response.status}`);
@@ -590,8 +592,7 @@ async function updateSearchSuggestions(query) {
   const list = document.querySelector("#symbolSuggestions");
   if (!list || query.trim().length < 2) return;
   try {
-    const response = await fetch(`/api/search?q=${encodeURIComponent(query.trim())}`);
-    const data = await response.json();
+    const data = await apiJson(`/api/search?q=${encodeURIComponent(query.trim())}`);
     const results = data.results || [];
     const merged = [
       ...results.map((item) => [item.symbol, `${item.name}${item.exchange ? ` | ${item.exchange}` : ""}`]),

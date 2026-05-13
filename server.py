@@ -21,6 +21,16 @@ PUBLIC = ROOT / "public"
 
 app = FastAPI(title="Market Lens")
 
+
+@app.middleware("http")
+async def no_cache_api(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["cache-control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["pragma"] = "no-cache"
+        response.headers["expires"] = "0"
+    return response
+
 PORTFOLIO_NAMES = {
     "AAPL": "Apple Inc.",
     "MSFT": "Microsoft Corp.",

@@ -115,6 +115,11 @@ function linePath(values, width, height, pad = 4) {
 function spark(values, positive = true, className = "sparkline") {
   const color = positive ? "#087d31" : "#cf1f2f";
   const fill = positive ? "#dff5e7" : "#fde2e4";
+  if (!values?.length) {
+    return `<svg class="${className}" viewBox="0 0 260 78" preserveAspectRatio="none">
+      <path d="M4 39H256" fill="none" stroke="#c8d2df" stroke-width="2" stroke-dasharray="5 5"></path>
+    </svg>`;
+  }
   const path = linePath(values, 260, 78);
   return `<svg class="${className}" viewBox="0 0 260 78" preserveAspectRatio="none">
     <path d="${path} L256 74 L4 74 Z" fill="${fill}" opacity=".72"></path>
@@ -769,12 +774,15 @@ async function resolveSymbol(rawValue) {
   if (!raw) return "";
   const typedSymbol = raw.toUpperCase().replace(/[^A-Z.]/g, "");
   const looksLikeTicker = /^[A-Z]{1,5}(\.[A-Z])?$/.test(typedSymbol) && raw.toUpperCase() === typedSymbol;
-  if (looksLikeTicker) return typedSymbol;
   try {
     const data = await apiJson(`/api/resolve?q=${encodeURIComponent(raw)}`);
-    return data.match?.symbol || typedSymbol;
+    if (looksLikeTicker) {
+      const exact = (data.results || []).find((item) => item.symbol?.toUpperCase() === typedSymbol);
+      return exact?.symbol || "";
+    }
+    return data.match?.symbol || "";
   } catch {
-    return typedSymbol;
+    return "";
   }
 }
 
@@ -940,6 +948,10 @@ function bindEvents() {
       state.searchMessage = `${symbol} is already in your portfolio.`;
       input.value = "";
       openStockAnalysis(symbol);
+    } else {
+      state.searchMessage = `Could not find a valid listed stock for "${raw}". Try the official ticker or company name, for example MRVL or Marvell Technology.`;
+      input.value = "";
+      render();
     }
   });
   document.querySelector("#symbolInput")?.addEventListener("input", (event) => {

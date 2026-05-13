@@ -216,6 +216,8 @@ def normalize_quote(symbol: str) -> dict[str, Any]:
         previous = closes[0]
     change = price - previous if price is not None and previous is not None else None
     change_percent = (change / previous) * 100 if change is not None and previous else None
+    if price is None and not closes:
+        raise ValueError(f"No usable market data for {clean_symbol}")
 
     display_name = PORTFOLIO_NAMES.get(clean_symbol, clean_symbol)
     exchange = ""
@@ -332,8 +334,10 @@ def alias_match(query: str) -> str | None:
         return None
     if cleaned.upper() in PORTFOLIO_NAMES:
         return cleaned.upper()
+    if cleaned in SEARCH_ALIASES:
+        return SEARCH_ALIASES[cleaned]
     for phrase, symbol in SEARCH_ALIASES.items():
-        if phrase in cleaned:
+        if len(phrase) > 3 and phrase in cleaned:
             return symbol
     return None
 
@@ -421,10 +425,6 @@ def search(q: str = Query(..., min_length=1)) -> dict[str, Any]:
 @app.get("/api/resolve")
 def resolve(q: str = Query(..., min_length=1)) -> dict[str, Any]:
     results = search_results(q)
-    if not results:
-        cleaned = q.strip().upper().replace(" ", "")
-        if cleaned:
-            results = [{"symbol": cleaned, "name": cleaned, "exchange": ""}]
     return {"match": results[0] if results else None, "results": results}
 
 

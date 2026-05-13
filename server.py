@@ -29,6 +29,38 @@ PORTFOLIO_NAMES = {
     "GOOGL": "Alphabet Inc.",
     "TSLA": "Tesla, Inc.",
     "META": "Meta Platforms, Inc.",
+    "MRVL": "Marvell Technology, Inc.",
+    "AMD": "Advanced Micro Devices, Inc.",
+    "NFLX": "Netflix, Inc.",
+    "AVGO": "Broadcom Inc.",
+    "JPM": "JPMorgan Chase & Co.",
+    "V": "Visa Inc.",
+    "WMT": "Walmart Inc.",
+    "UNH": "UnitedHealth Group Inc.",
+}
+
+SEARCH_ALIASES = {
+    "apple": "AAPL",
+    "microsoft": "MSFT",
+    "nvidia": "NVDA",
+    "amazon": "AMZN",
+    "alphabet": "GOOGL",
+    "google": "GOOGL",
+    "tesla": "TSLA",
+    "meta": "META",
+    "facebook": "META",
+    "marvell": "MRVL",
+    "marvel": "MRVL",
+    "marvell semiconductor": "MRVL",
+    "marvel semiconductor": "MRVL",
+    "advanced micro devices": "AMD",
+    "netflix": "NFLX",
+    "broadcom": "AVGO",
+    "jpmorgan": "JPM",
+    "jp morgan": "JPM",
+    "visa": "V",
+    "walmart": "WMT",
+    "unitedhealth": "UNH",
 }
 
 
@@ -47,18 +79,50 @@ def yahoo_symbol(symbol: str) -> str:
     return symbol.upper().replace(".SPX", "^GSPC").replace(".IXIC", "^IXIC")
 
 
-def history_frame(symbol: str, period: str = "1d", interval: str = "5m") -> pd.DataFrame:
-    frame = yf.download(
-        yahoo_symbol(symbol),
-        period=period,
-        interval=interval,
-        progress=False,
-        auto_adjust=False,
-        threads=False,
+def yahoo_chart(symbol: str, period: str = "1d", interval: str = "5m") -> dict[str, Any]:
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{requests.utils.quote(yahoo_symbol(symbol), safe='')}"
+    response = requests.get(
+        url,
+        params={"range": period, "interval": interval},
+        timeout=12,
+        headers={"user-agent": "MarketLens/1.0"},
     )
-    if isinstance(frame.columns, pd.MultiIndex):
-        frame.columns = frame.columns.get_level_values(0)
+    response.raise_for_status()
+    result = response.json().get("chart", {}).get("result", [])
+    if not result:
+        raise ValueError(f"No chart data for {symbol}")
+    return result[0]
+
+
+def chart_frame(symbol: str, period: str = "1d", interval: str = "5m") -> pd.DataFrame:
+    result = yahoo_chart(symbol, period, interval)
+    timestamps = result.get("timestamp") or []
+    quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+    closes = quote.get("close") or []
+    if not timestamps or not closes:
+        return pd.DataFrame()
+    frame = pd.DataFrame(
+        {"Close": closes},
+        index=pd.to_datetime(timestamps, unit="s", utc=True),
+    )
     return frame.dropna(how="all")
+
+
+def history_frame(symbol: str, period: str = "1d", interval: str = "5m") -> pd.DataFrame:
+    try:
+        return chart_frame(symbol, period, interval)
+    except Exception:
+        frame = yf.download(
+            yahoo_symbol(symbol),
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
+            threads=False,
+        )
+        if isinstance(frame.columns, pd.MultiIndex):
+            frame.columns = frame.columns.get_level_values(0)
+        return frame.dropna(how="all")
 
 
 def close_values(frame: pd.DataFrame) -> list[float]:
@@ -104,11 +168,19 @@ def analytics_for(closes: list[float], price: float | None) -> dict[str, float |
 
 def normalize_quote(symbol: str) -> dict[str, Any]:
     clean_symbol = symbol.upper()
-    ticker = yf.Ticker(yahoo_symbol(clean_symbol))
+    chart_meta: dict[str, Any] = {}
     try:
-        info = ticker.fast_info or {}
+        chart_meta = yahoo_chart(clean_symbol, "1d", "5m").get("meta") or {}
     except Exception:
-        info = {}
+        pass
+
+    ticker = yf.Ticker(yahoo_symbol(clean_symbol))
+    info: dict[str, Any] = {}
+    if not chart_meta:
+        try:
+            info = ticker.fast_info or {}
+        except Exception:
+            info = {}
 
     intraday = history_frame(clean_symbol, "1d", "5m")
     daily = history_frame(clean_symbol, "6mo", "1d")
@@ -117,8 +189,8 @@ def normalize_quote(symbol: str) -> dict[str, Any]:
     closes = intraday_closes or daily_closes[-72:]
     timestamps = (frame_timestamps(intraday) if intraday_closes else frame_timestamps(daily))[-72:]
 
-    price = safe_float(info.get("last_price")) or (closes[-1] if closes else None)
-    previous = safe_float(info.get("previous_close"))
+    price = safe_float(chart_meta.get("regularMarketPrice")) or safe_float(info.get("last_price")) or (closes[-1] if closes else None)
+    previous = safe_float(chart_meta.get("chartPreviousClose")) or safe_float(chart_meta.get("previousClose")) or safe_float(info.get("previous_close"))
     if previous is None and len(daily_closes) >= 2:
         previous = daily_closes[-2]
     if previous is None and closes:
@@ -130,9 +202,11 @@ def normalize_quote(symbol: str) -> dict[str, Any]:
     exchange = ""
     try:
         metadata = ticker.get_info()
-        display_name = metadata.get("longName") or metadata.get("shortName") or display_name
-        exchange = metadata.get("exchange") or metadata.get("fullExchangeName") or ""
+        display_name = chart_meta.get("longName") or chart_meta.get("shortName") or metadata.get("longName") or metadata.get("shortName") or display_name
+        exchange = chart_meta.get("exchangeName") or metadata.get("exchange") or metadata.get("fullExchangeName") or ""
     except Exception:
+        display_name = chart_meta.get("longName") or chart_meta.get("shortName") or display_name
+        exchange = chart_meta.get("exchangeName") or ""
         pass
 
     return {
@@ -143,10 +217,13 @@ def normalize_quote(symbol: str) -> dict[str, Any]:
         "previousClose": previous,
         "change": safe_float(change),
         "changePercent": safe_float(change_percent),
-        "open": safe_float(info.get("open")),
-        "dayHigh": safe_float(info.get("day_high")),
-        "dayLow": safe_float(info.get("day_low")),
-        "range52Week": [safe_float(info.get("year_low")), safe_float(info.get("year_high"))],
+        "open": safe_float(chart_meta.get("regularMarketOpen")) or safe_float(info.get("open")),
+        "dayHigh": safe_float(chart_meta.get("regularMarketDayHigh")) or safe_float(info.get("day_high")),
+        "dayLow": safe_float(chart_meta.get("regularMarketDayLow")) or safe_float(info.get("day_low")),
+        "range52Week": [
+            safe_float(chart_meta.get("fiftyTwoWeekLow")) or safe_float(info.get("year_low")),
+            safe_float(chart_meta.get("fiftyTwoWeekHigh")) or safe_float(info.get("year_high")),
+        ],
         "marketTime": datetime.now(timezone.utc).isoformat(),
         "isStale": not bool(intraday_closes),
         "dataMode": "intraday" if intraday_closes else "last close",
@@ -230,6 +307,51 @@ def news_for(symbols: list[str]) -> list[dict[str, str]]:
     return [decode_news_item(item, symbols) for item in root.findall("./channel/item")[:18]]
 
 
+def alias_match(query: str) -> str | None:
+    cleaned = " ".join(query.lower().replace(",", " ").split())
+    if not cleaned:
+        return None
+    if cleaned.upper() in PORTFOLIO_NAMES:
+        return cleaned.upper()
+    for phrase, symbol in SEARCH_ALIASES.items():
+        if phrase in cleaned:
+            return symbol
+    return None
+
+
+def search_results(query: str) -> list[dict[str, Any]]:
+    alias = alias_match(query)
+    fallback = []
+    if alias:
+        fallback.append({"symbol": alias, "name": PORTFOLIO_NAMES.get(alias, alias), "exchange": "US"})
+    try:
+        response = requests.get(
+            "https://query1.finance.yahoo.com/v1/finance/search",
+            params={"q": query, "quotesCount": 8, "newsCount": 0},
+            timeout=10,
+            headers={"user-agent": "MarketLens/1.0"},
+        )
+        response.raise_for_status()
+        for quote in response.json().get("quotes", []):
+            if quote.get("symbol") and quote.get("quoteType") in {"EQUITY", "ETF", "INDEX"}:
+                fallback.append({
+                    "symbol": quote.get("symbol"),
+                    "name": quote.get("shortname") or quote.get("longname") or quote.get("symbol"),
+                    "exchange": quote.get("exchange"),
+                })
+    except Exception:
+        pass
+
+    seen = set()
+    unique = []
+    for item in fallback:
+        symbol = item.get("symbol")
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            unique.append(item)
+    return unique[:8]
+
+
 @app.get("/api/markets")
 def markets() -> dict[str, Any]:
     try:
@@ -274,22 +396,17 @@ def news(symbols: str = Query("AAPL,MSFT,NVDA,AMZN,GOOGL,TSLA"), type: str | Non
 
 @app.get("/api/search")
 def search(q: str = Query(..., min_length=1)) -> dict[str, Any]:
-    response = requests.get(
-        "https://query1.finance.yahoo.com/v1/finance/search",
-        params={"q": q, "quotesCount": 8, "newsCount": 0},
-        timeout=10,
-        headers={"user-agent": "MarketLens/1.0"},
-    )
-    response.raise_for_status()
-    results = []
-    for quote in response.json().get("quotes", []):
-        if quote.get("symbol") and quote.get("quoteType") in {"EQUITY", "ETF", "INDEX"}:
-            results.append({
-                "symbol": quote.get("symbol"),
-                "name": quote.get("shortname") or quote.get("longname") or quote.get("symbol"),
-                "exchange": quote.get("exchange"),
-            })
-    return {"results": results}
+    return {"results": search_results(q)}
+
+
+@app.get("/api/resolve")
+def resolve(q: str = Query(..., min_length=1)) -> dict[str, Any]:
+    results = search_results(q)
+    if not results:
+        cleaned = q.strip().upper().replace(" ", "")
+        if cleaned:
+            results = [{"symbol": cleaned, "name": cleaned, "exchange": ""}]
+    return {"match": results[0] if results else None, "results": results}
 
 
 app.mount("/assets", StaticFiles(directory=PUBLIC), name="assets")

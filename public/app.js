@@ -68,6 +68,15 @@ function signed(value, suffix = "") {
   return `${value >= 0 ? "+" : ""}${fmt.format(value)}${suffix}`;
 }
 
+async function apiJson(url) {
+  const response = await fetch(url);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error || data.detail) {
+    throw new Error(data.error || data.detail || `Request failed: ${response.status}`);
+  }
+  return data;
+}
+
 function marketSession() {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
@@ -545,15 +554,16 @@ async function loadData() {
   render();
   try {
     const symbols = state.symbols.join(",");
-    const [markets, portfolio, spHistory, ndHistory, news, marketNews] = await Promise.all([
-      fetch("/api/markets").then((r) => r.json()),
-      fetch(`/api/portfolio?symbols=${encodeURIComponent(symbols)}`).then((r) => r.json()),
-      fetch(`/api/history?symbol=${encodeURIComponent("^GSPC")}&range=${state.marketRange}`).then((r) => r.json()),
-      fetch(`/api/history?symbol=${encodeURIComponent("^IXIC")}&range=${state.marketRange}`).then((r) => r.json()),
-      fetch(`/api/news?symbols=${encodeURIComponent(symbols)}`).then((r) => r.json()),
-      fetch("/api/news?type=market").then((r) => r.json()),
+    const [markets, portfolio, spHistory, ndHistory] = await Promise.all([
+      apiJson("/api/markets"),
+      apiJson(`/api/portfolio?symbols=${encodeURIComponent(symbols)}`),
+      apiJson(`/api/history?symbol=${encodeURIComponent("^GSPC")}&range=${state.marketRange}`),
+      apiJson(`/api/history?symbol=${encodeURIComponent("^IXIC")}&range=${state.marketRange}`),
     ]);
-    if (markets.error || portfolio.error || news.error || marketNews.error) throw new Error(markets.error || portfolio.error || news.error || marketNews.error);
+    const [news, marketNews] = await Promise.all([
+      apiJson(`/api/news?symbols=${encodeURIComponent(symbols)}`).catch(() => ({ news: [] })),
+      apiJson("/api/news?type=market").catch(() => ({ news: [] })),
+    ]);
     state.markets = markets;
     state.portfolio = portfolio.quotes || [];
     if (state.activeSymbol && !state.portfolio.some((quote) => quote.symbol === state.activeSymbol)) {
@@ -599,6 +609,20 @@ async function updateSearchSuggestions(query) {
       .join("");
   } catch {
     list.innerHTML = knownStocks.map(([symbol, name]) => `<option value="${symbol}">${name}</option>`).join("");
+  }
+}
+
+async function resolveSymbol(rawValue) {
+  const raw = rawValue.trim();
+  if (!raw) return "";
+  const typedSymbol = raw.toUpperCase().replace(/[^A-Z.]/g, "");
+  const looksLikeTicker = /^[A-Z]{1,5}(\.[A-Z])?$/.test(typedSymbol) && raw.toUpperCase() === typedSymbol;
+  if (looksLikeTicker) return typedSymbol;
+  try {
+    const data = await apiJson(`/api/resolve?q=${encodeURIComponent(raw)}`);
+    return data.match?.symbol || typedSymbol;
+  } catch {
+    return typedSymbol;
   }
 }
 
@@ -652,9 +676,15 @@ function bindEvents() {
   document.querySelectorAll("[data-range]").forEach((button) => {
     button.addEventListener("click", async () => {
       state.marketRange = button.dataset.range;
-      state.histories["^GSPC"] = await fetch(`/api/history?symbol=${encodeURIComponent("^GSPC")}&range=${state.marketRange}`).then((r) => r.json());
-      state.histories["^IXIC"] = await fetch(`/api/history?symbol=${encodeURIComponent("^IXIC")}&range=${state.marketRange}`).then((r) => r.json());
-      render();
+      try {
+        state.histories["^GSPC"] = await apiJson(`/api/history?symbol=${encodeURIComponent("^GSPC")}&range=${state.marketRange}`);
+        state.histories["^IXIC"] = await apiJson(`/api/history?symbol=${encodeURIComponent("^IXIC")}&range=${state.marketRange}`);
+        state.error = "";
+      } catch (error) {
+        state.error = error.message;
+      } finally {
+        render();
+      }
     });
   });
   document.querySelectorAll("[data-remove]").forEach((button) => {
@@ -692,10 +722,11 @@ function bindEvents() {
       render();
     }
   });
-  document.querySelector("#symbolForm")?.addEventListener("submit", (event) => {
+  document.querySelector("#symbolForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const input = document.querySelector("#symbolInput");
-    const symbol = input.value.trim().toUpperCase().replace(/[^A-Z.]/g, "");
+    const raw = input.value;
+    const symbol = await resolveSymbol(raw);
     if (symbol && !state.symbols.includes(symbol)) {
       state.symbols = [symbol, ...state.symbols].slice(0, 12);
       state.activeSymbol = symbol;
